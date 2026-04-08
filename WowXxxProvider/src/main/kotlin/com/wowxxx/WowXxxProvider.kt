@@ -63,39 +63,15 @@ class WowXxxProvider : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse {
         val doc = app.get(url, headers = ua).document
-
         val title = doc.selectFirst("meta[property=og:title]")?.attr("content")?.trim()
             ?: doc.selectFirst("h1, h2")?.text()?.trim()
             ?: doc.title().trim()
-
         val poster = doc.selectFirst("meta[property=og:image]")?.attr("content")
             ?: doc.selectFirst("video[poster]")?.attr("poster")
-
         val description = doc.selectFirst("meta[name=description], meta[property=og:description]")
             ?.attr("content")
-
-        // Page source থেকে সব get_file URL বের করো
-        val pageHtml = app.get(url, headers = ua).text
-
-        // download=true URL গুলো বের করো — এগুলো expire হয় না
-        val downloadLinks = Regex("""https://www\.wow\.xxx/get_file/[^\s"'<>]+\?download=true[^\s"'<>]*""")
-            .findAll(pageHtml)
-            .map { it.value }
-            .toList()
-
-        // download=true না থাকলে সাধারণ get_file URL নাও
-        val regularLinks = if (downloadLinks.isEmpty()) {
-            Regex("""https://www\.wow\.xxx/get_file/[^\s"'<>]+\.mp4/""")
-                .findAll(pageHtml)
-                .map { it.value }
-                .filter { !it.contains("preview") }
-                .toList()
-        } else emptyList()
-
-        val allLinks = (downloadLinks + regularLinks).distinct()
-        val dataString = allLinks.joinToString("|")
-
-        return newMovieLoadResponse(title, url, TvType.Movie, dataString) {
+        // data হিসেবে page URL pass করো — loadLinks এ fresh URL নেওয়া হবে
+        return newMovieLoadResponse(title, url, TvType.Movie, url) {
             this.posterUrl = poster
             this.plot = description
         }
@@ -107,27 +83,45 @@ class WowXxxProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        if (data.isBlank()) return false
-        val links = data.split("|").filter { it.startsWith("http") }
+        if (data.isBlank() || !data.startsWith("http")) return false
+
+        // Play করার সময় fresh URL নাও
+        val pageHtml = app.get(data, headers = ua).text
+
+        val qualityMap = mapOf(
+            "2160" to Qualities.P2160.value,
+            "1080" to Qualities.P1080.value,
+            "720"  to Qualities.P720.value,
+            "480"  to Qualities.P480.value,
+            "360"  to Qualities.P360.value,
+        )
+
+        val qualityNameMap = mapOf(
+            Qualities.P2160.value to "4K",
+            Qualities.P1080.value to "1080p",
+            Qualities.P720.value  to "720p",
+            Qualities.P480.value  to "480p",
+            Qualities.P360.value  to "360p",
+        )
+
+        // get_file URL বের করো (download=true সহ)
+        val links = Regex("""https://www\.wow\.xxx/get_file/[^\s"'<>]+\.mp4[^\s"'<>]*""")
+            .findAll(pageHtml)
+            .map { it.value }
+            .filter { !it.contains("preview") && !it.contains("screenshot") }
+            .distinctBy { url ->
+                // quality আলাদা করো
+                qualityMap.keys.firstOrNull { url.contains(it) } ?: "unknown"
+            }
+            .toList()
+
         if (links.isEmpty()) return false
 
         links.forEach { videoUrl ->
-            val quality = when {
-                videoUrl.contains("2160") -> Qualities.P2160.value
-                videoUrl.contains("1080") -> Qualities.P1080.value
-                videoUrl.contains("720")  -> Qualities.P720.value
-                videoUrl.contains("480")  -> Qualities.P480.value
-                videoUrl.contains("360")  -> Qualities.P360.value
-                else                      -> Qualities.Unknown.value
-            }
-            val qualityName = when (quality) {
-                Qualities.P2160.value -> "4K"
-                Qualities.P1080.value -> "1080p"
-                Qualities.P720.value  -> "720p"
-                Qualities.P480.value  -> "480p"
-                Qualities.P360.value  -> "360p"
-                else                  -> "HD"
-            }
+            val qualityKey = qualityMap.keys.firstOrNull { videoUrl.contains(it) }
+            val quality = qualityMap[qualityKey] ?: Qualities.Unknown.value
+            val qualityName = qualityNameMap[quality] ?: "HD"
+
             callback(newExtractorLink(name, "$name [$qualityName]", videoUrl, ExtractorLinkType.VIDEO) {
                 this.quality = quality
                 this.headers = ua + mapOf(
