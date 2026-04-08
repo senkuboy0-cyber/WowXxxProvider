@@ -70,7 +70,6 @@ class WowXxxProvider : MainAPI() {
             ?: doc.selectFirst("video[poster]")?.attr("poster")
         val description = doc.selectFirst("meta[name=description], meta[property=og:description]")
             ?.attr("content")
-        // data হিসেবে page URL pass করো — loadLinks এ fresh URL নেওয়া হবে
         return newMovieLoadResponse(title, url, TvType.Movie, url) {
             this.posterUrl = poster
             this.plot = description
@@ -85,51 +84,53 @@ class WowXxxProvider : MainAPI() {
     ): Boolean {
         if (data.isBlank() || !data.startsWith("http")) return false
 
-        // Play করার সময় fresh URL নাও
+        // Fresh page load করো
         val pageHtml = app.get(data, headers = ua).text
 
-        val qualityMap = mapOf(
-            "2160" to Qualities.P2160.value,
-            "1080" to Qualities.P1080.value,
-            "720"  to Qualities.P720.value,
-            "480"  to Qualities.P480.value,
-            "360"  to Qualities.P360.value,
-        )
-
-        val qualityNameMap = mapOf(
-            Qualities.P2160.value to "4K",
-            Qualities.P1080.value to "1080p",
-            Qualities.P720.value  to "720p",
-            Qualities.P480.value  to "480p",
-            Qualities.P360.value  to "360p",
-        )
-
-        // get_file URL বের করো (download=true সহ)
-        val links = Regex("""https://www\.wow\.xxx/get_file/[^\s"'<>]+\.mp4[^\s"'<>]*""")
+        // get_file URL বের করো (download link বাদে)
+        val getFileLinks = Regex("""https://www\.wow\.xxx/get_file/[^\s"'<>]+\.mp4/""")
             .findAll(pageHtml)
             .map { it.value }
             .filter { !it.contains("preview") && !it.contains("screenshot") }
-            .distinctBy { url ->
-                // quality আলাদা করো
-                qualityMap.keys.firstOrNull { url.contains(it) } ?: "unknown"
-            }
             .toList()
 
-        if (links.isEmpty()) return false
+        if (getFileLinks.isEmpty()) return false
 
-        links.forEach { videoUrl ->
-            val qualityKey = qualityMap.keys.firstOrNull { videoUrl.contains(it) }
-            val quality = qualityMap[qualityKey] ?: Qualities.Unknown.value
-            val qualityName = qualityNameMap[quality] ?: "HD"
+        val qualityMap = mapOf(
+            "2160" to Pair(Qualities.P2160.value, "4K"),
+            "1080" to Pair(Qualities.P1080.value, "1080p"),
+            "720"  to Pair(Qualities.P720.value,  "720p"),
+            "480"  to Pair(Qualities.P480.value,  "480p"),
+            "360"  to Pair(Qualities.P360.value,  "360p"),
+        )
 
-            callback(newExtractorLink(name, "$name [$qualityName]", videoUrl, ExtractorLinkType.VIDEO) {
-                this.quality = quality
-                this.headers = ua + mapOf(
-                    "Referer" to mainUrl,
-                    "Origin" to mainUrl
-                )
-            })
+        var found = false
+        getFileLinks.distinctBy { url ->
+            qualityMap.keys.firstOrNull { url.contains(it) } ?: "unknown"
+        }.forEach { getFileUrl ->
+            try {
+                // 302 redirect follow করে fpvcdn.com URL নাও
+                val finalUrl = app.get(
+                    getFileUrl,
+                    headers = ua + mapOf("Referer" to mainUrl),
+                    allowRedirects = true
+                ).url
+
+                if (!finalUrl.startsWith("http")) return@forEach
+
+                val qualityKey = qualityMap.keys.firstOrNull { getFileUrl.contains(it) }
+                val (quality, qualityName) = qualityMap[qualityKey] ?: Pair(Qualities.Unknown.value, "HD")
+
+                callback(newExtractorLink(name, "$name [$qualityName]", finalUrl, ExtractorLinkType.VIDEO) {
+                    this.quality = quality
+                    this.headers = mapOf(
+                        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                        "Referer" to mainUrl
+                    )
+                })
+                found = true
+            } catch (e: Exception) { }
         }
-        return true
+        return found
     }
 }
