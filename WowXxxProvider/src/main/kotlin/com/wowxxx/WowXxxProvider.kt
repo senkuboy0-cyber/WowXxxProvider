@@ -15,17 +15,17 @@ class WowXxxProvider : MainAPI() {
     )
 
     override val mainPage = mainPageOf(
-        "$mainUrl/latest-updates/"                                  to "🆕 Latest Updates",
-        "$mainUrl/networks/brazzers-com/latest-updates/"            to "🔥 Brazzers",
-        "$mainUrl/networks/teamskeet-com/latest-updates/"           to "🎬 TeamSkeet",
-        "$mainUrl/networks/mylf-com/latest-updates/"                to "💋 MYLF",
-        "$mainUrl/networks/rk-com/latest-updates/"                  to "⭐ RK Prime",
-        "$mainUrl/networks/mom-lover/latest-updates/"               to "❤️ Mom Lover",
-        "$mainUrl/sites/perv-mom/latest-updates/"                   to "Perv Mom",
-        "$mainUrl/sites/my-pervy-family/latest-updates/"            to "My Pervy Family",
-        "$mainUrl/sites/my-dirty-maid/latest-updates/"              to "My Dirty Maid",
-        "$mainUrl/sites/dad-crush/latest-updates/"                  to "Dad Crush",
-        "$mainUrl/sites/sis-loves-me/latest-updates/"               to "Sis Loves Me",
+        "$mainUrl/latest-updates/"                           to "🆕 Latest Updates",
+        "$mainUrl/networks/brazzers-com/latest-updates/"     to "🔥 Brazzers",
+        "$mainUrl/networks/teamskeet-com/latest-updates/"    to "🎬 TeamSkeet",
+        "$mainUrl/networks/mylf-com/latest-updates/"         to "💋 MYLF",
+        "$mainUrl/networks/rk-com/latest-updates/"           to "⭐ RK Prime",
+        "$mainUrl/networks/mom-lover/latest-updates/"        to "❤️ Mom Lover",
+        "$mainUrl/sites/perv-mom/latest-updates/"            to "Perv Mom",
+        "$mainUrl/sites/my-pervy-family/latest-updates/"     to "My Pervy Family",
+        "$mainUrl/sites/my-dirty-maid/latest-updates/"       to "My Dirty Maid",
+        "$mainUrl/sites/dad-crush/latest-updates/"           to "Dad Crush",
+        "$mainUrl/sites/sis-loves-me/latest-updates/"        to "Sis Loves Me",
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
@@ -42,7 +42,7 @@ class WowXxxProvider : MainAPI() {
             }?.let { if (it.startsWith("http")) it else null }
             newMovieSearchResponse(title, href, TvType.Movie) { posterUrl = poster }
         }
-        val hasNext = doc.selectFirst("a.next, a[rel=next], .pagination .next, a[href*='/${page+1}/']") != null
+        val hasNext = doc.selectFirst("a.next, a[rel=next], .pagination .next") != null
         return newHomePageResponse(request.name, items, hasNext)
     }
 
@@ -74,25 +74,25 @@ class WowXxxProvider : MainAPI() {
         val description = doc.selectFirst("meta[name=description], meta[property=og:description]")
             ?.attr("content")
 
-        // সব quality র video URL বের করো
-        val videoLinks = doc.select("source[src*='/get_file/'], a[href*='/get_file/']")
-            .mapNotNull { el ->
-                val src = el.attr("src").ifBlank { el.attr("href") }.trim()
-                if (src.isNotBlank()) src else null
-            }.filter { it.contains(".mp4") }
-            .also { links ->
-                // যদি source tag না থাকে page source থেকে regex দিয়ে বের করো
-            }
-
-        // regex দিয়ে get_file URL বের করো
+        // Page source থেকে সব get_file URL বের করো
         val pageHtml = app.get(url, headers = ua).text
-        val regexLinks = Regex("""https://www\.wow\.xxx/get_file/[^\s"'<>]+\.mp4[^\s"'<>]*""")
+
+        // download=true URL গুলো বের করো — এগুলো expire হয় না
+        val downloadLinks = Regex("""https://www\.wow\.xxx/get_file/[^\s"'<>]+\?download=true[^\s"'<>]*""")
             .findAll(pageHtml)
-            .map { it.value.trimEnd('/') }
-            .filter { !it.contains("download=true") }
+            .map { it.value }
             .toList()
 
-        val allLinks = (videoLinks + regexLinks).distinct()
+        // download=true না থাকলে সাধারণ get_file URL নাও
+        val regularLinks = if (downloadLinks.isEmpty()) {
+            Regex("""https://www\.wow\.xxx/get_file/[^\s"'<>]+\.mp4/""")
+                .findAll(pageHtml)
+                .map { it.value }
+                .filter { !it.contains("preview") }
+                .toList()
+        } else emptyList()
+
+        val allLinks = (downloadLinks + regularLinks).distinct()
         val dataString = allLinks.joinToString("|")
 
         return newMovieLoadResponse(title, url, TvType.Movie, dataString) {
@@ -130,7 +130,10 @@ class WowXxxProvider : MainAPI() {
             }
             callback(newExtractorLink(name, "$name [$qualityName]", videoUrl, ExtractorLinkType.VIDEO) {
                 this.quality = quality
-                this.headers = ua + mapOf("Referer" to mainUrl)
+                this.headers = ua + mapOf(
+                    "Referer" to mainUrl,
+                    "Origin" to mainUrl
+                )
             })
         }
         return true
